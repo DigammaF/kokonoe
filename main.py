@@ -5,6 +5,7 @@ from __future__ import annotations
 import math
 import functools
 import itertools
+import random
 
 from typing import Type, TypeVar, Tuple, Set, Mapping, MutableMapping, Sequence, Generic, Callable, List
 
@@ -485,7 +486,7 @@ class Prover:
 				if new_formulae is formulae:
 					continue
 
-				self.goal_stack.append(Sequent(gamma + (new_formulae,), sequent.consequent))
+				self.goal_stack.append(Sequent(gamma + (new_formulae.formulae,), sequent.consequent))
 				return
 
 			elif isinstance(formulae, Predicat):
@@ -608,6 +609,7 @@ def main():
 	print("================")
 	sequent = Sequent(tuple(axioms + situation), (question,))
 	print(sequent.get_str(names))
+	print("Proving")
 	prover = Prover.new(sequent)
 	prover.prove()
 	print(prover.get_debug(names))
