@@ -3,6 +3,6 @@ Implementation of Gentzen's Sequent Calculus (LK) applied to creating and interr
 
 Roadmap:
 
-  mathematical proof of well formation of the Prover
+&emsp;- mathematical proof of well formation of the Prover
 
-  translation from a subset of natural english to predicates (very complex, very hard subject, that's why we specify 'a subset')
+&emsp;- translation from a subset of natural english to predicates (very complex, very hard subject, that's why we specify 'a subset')
