@@ -20,6 +20,8 @@ def get_any(obj: Set[G]) -> G:
 	for e in obj:
 		return e
 
+	return e # to appease the mypy gods
+
 class NotSpecified(Exception): pass
 
 class TypeInfo:
@@ -76,7 +78,7 @@ class Names:
 			return f"?{n}"
 
 	def get_l(self, l: Sequence[int]) -> Sequence[str]:
-		return (self.get(e) for e in l)
+		return tuple(self.get(e) for e in l)
 
 	def get_str(self) -> str:
 		return str(self.symbol_table)
@@ -257,12 +259,16 @@ class ForAll(Formulae):
 
 		self.bound_identifiers = bound_identifiers
 		self.formulae = formulae
+		self.bound_identifiers_free_symbols = set()
+
+		for e in self.bound_identifiers:
+			self.bound_identifiers_free_symbols |= e.free_symbols()
 
 	def __eq__(self, other) -> bool:
 		return type(self) is type(other) and self.bound_identifiers == other.bound_identifiers and self.formulae == other.formulae
 
 	def free_symbols(self) -> Set[int]:
-		return self.formulae.free_symbols() - functools.reduce(set.union, (e.free_symbols() for e in self.bound_identifiers))
+		return self.formulae.free_symbols() - self.bound_identifiers_free_symbols
 
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 		return self.formulae.get_type_infos()
