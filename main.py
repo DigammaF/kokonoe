@@ -375,7 +375,7 @@ class Predicat(Formulae):
 		return f"{self.head.get_str(names)}({', '.join(e.get_str(names) for e in self.tail)})"
 
 	def get_symbols(self) -> Set[int]:
-		return functools.reduce(set.union, (e.get_symbols() for e in self.tail))
+		return functools.reduce(set.union, (e.get_symbols() for e in self.tail), set())
 
 	def get_eval(self, context: Context) -> Any:
 		return self.head.get_eval(context)(*[ident.get_eval(context) for ident in self.tail])
@@ -858,17 +858,31 @@ def exists(identifiers: Set[Identifier], formulae: Formulae) -> Exists:
 def main():
 
 	names = Names.new()
+	nat_set = v("N")
+	belongs = v("belongs")
 	n = v("n")
-	p = v("P")
-	q = v("Q")
 	a = v("a")
-	i = v("i")
+	b = v("b")
+	zero = v("O")
+	eq = v("eq")
+	add = v("add")
+	s = v("S")
 	print(names.get_str())
 
 	print("=== Axioms ===")
 	axioms = [
-		forall({n}, p(n) |imply| q(n)),
-		p(i(a)),
+		belongs(zero(), nat_set()),
+		forall({n}, belongs(n, nat_set()) |imply| eq(add(n, zero()), n)),
+		forall({a, b}, eq(add(a, b), add(b, a))),
+		forall({n}, belongs(n, nat_set()) |imply| belongs(s(n), nat_set())),
+		forall({n}, no(eq(s(n), zero()))),
+		forall({a}, belongs(a, nat_set()) |imply|\
+			forall({b}, belongs(b, nat_set()) |imply|\
+				exists({n}, eq(s(n), b) |imply|\
+					eq(add(a, b), add(s(a), n))
+				)
+			)
+		),
 	]
 
 	for axiom in axioms:
@@ -896,7 +910,7 @@ def main():
 	print(TypeInfo.str_power_infos(names, get_power_infos(situation)))
 
 	print("=== Question ===")
-	question = q(i(a))
+	question = eq(add(s(zero()), s(zero())), s(s(zero())))
 
 	domain_vals = {
 		#eq.symbol: lambda a, b: a == b,
