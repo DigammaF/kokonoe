@@ -7,7 +7,7 @@ import functools
 import itertools
 import random
 
-from typing import Type, TypeVar, Tuple, Set, Mapping, MutableMapping, Sequence, Generic, Callable, List, Union, Any
+from typing import Type, TypeVar, Tuple, Set, Mapping, MutableMapping, Sequence, Generic, Callable, List, Union, Any, Iterator, Iterable
 
 Clue = Tuple[int, int]
 # Predicat head symbol, place
@@ -24,6 +24,40 @@ def get_any(obj: Set[G]) -> G:
 		return e
 
 	return e # to appease the mypy gods
+
+H = TypeVar("H")
+J = TypeVar("J")
+
+class EqDict(Generic[H, J]):
+
+	def __init__(self, data: List[Tuple[H, J]] = None):
+
+		if data	is None:
+			self.data: List[Tuple[H, J]] = []
+
+		else:
+			self.data = data
+
+	def __getitem__(self, key: H) -> J:
+
+		for k, v in self.data:
+			if k == key:
+				return v
+
+		raise KeyError
+
+	def __setitem__(self, key: H, val: J):
+
+		for i, (k, v) in enumerate(self.data):
+			if k == key:
+				self.data.pop(i)
+				self.data.insert(i, (key, val))
+				return
+
+		self.data.append((key, val))
+
+	def items(self) -> Iterator[Tuple[H, J]]:
+		return (e for e in self.data)
 
 class NotSpecified(Exception): pass
 
@@ -49,6 +83,10 @@ class TypeInfo:
 	@classmethod
 	def str_infos(self, names: Names, type_infos: Mapping[int, TypeInfo]) -> str:
 		return "\n".join(f" {names.get(sym)} : {t.get_str(names)}" for sym, t in type_infos.items())
+
+	@classmethod
+	def str_power_infos(self, names: Names, power_infos: EqDict[Formulae, TypeInfo]) -> str:
+		return "\n".join(f" {formulae.get_str(names)} : {t.get_str(names)}" for formulae, t in power_infos.items())
 
 class Names:
 
@@ -130,6 +168,9 @@ class Formulae:
 	def get_eval(self, context: Context) -> Any:
 		raise NotSpecified(f"{type(self)} {self}")
 
+	def get_power_infos(self) -> EqDict[Formulae, TypeInfo]:
+		raise NotSpecified(f"{type(self)} {self}")
+
 def merged(a: Mapping[int, TypeInfo], b: Mapping[int, TypeInfo]) -> MutableMapping[int, TypeInfo]:
 
 	ans: MutableMapping[int, TypeInfo] = {}
@@ -146,6 +187,22 @@ def merged(a: Mapping[int, TypeInfo], b: Mapping[int, TypeInfo]) -> MutableMappi
 
 	return ans
 
+def merged_power(a: EqDict[Formulae, TypeInfo], b: EqDict[Formulae, TypeInfo]) -> EqDict[Formulae, TypeInfo]:
+
+	ans: EqDict[Formulae, TypeInfo] = EqDict()
+
+	for type_infos in (a, b):
+
+		for formulae, type_info in type_infos.items():
+
+			try:
+				ans[formulae] |= type_info
+
+			except KeyError:
+				ans[formulae] = type_info
+
+	return ans
+
 def get_type_infos(l: Sequence[Formulae]) -> Mapping[int, TypeInfo]:
 	
 	ans: Mapping[int, TypeInfo] = {}
@@ -154,6 +211,17 @@ def get_type_infos(l: Sequence[Formulae]) -> Mapping[int, TypeInfo]:
 
 		type_infos = formulae.get_type_infos()
 		ans = merged(ans, type_infos)
+
+	return ans
+
+def get_power_infos(l: Sequence[Formulae]) -> EqDict[Formulae, TypeInfo]:
+
+	ans: EqDict[Formulae, TypeInfo] = EqDict()
+
+	for formulae in l:
+
+		power_infos = formulae.get_power_infos()
+		ans = merged_power(ans, power_infos)
 
 	return ans
 
@@ -179,6 +247,9 @@ class Identifier(Formulae):
 
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 		return {}
+
+	def get_power_infos(self) -> EqDict[Formulae, TypeInfo]:
+		return EqDict()
 
 	def get_str(self, names: Names) -> str:
 		return names.get(self.symbol)
@@ -247,6 +318,35 @@ class Predicat(Formulae):
 
 		return ans
 
+	def get_power_infos(self) -> EqDict[Formulae, TypeInfo]:
+
+		ans: EqDict[Formulae, TypeInfo] = EqDict()
+
+		for place, sub_formulae in enumerate(self.tail, 0):
+
+			if isinstance(sub_formulae, Identifier):
+
+				try:
+					ans[sub_formulae].add((self.head.symbol, place))
+
+				except KeyError:
+					ans[sub_formulae] = TypeInfo({(self.head.symbol, place),})
+
+			elif isinstance(sub_formulae, Predicat):
+
+				try:
+					ans[sub_formulae].add((sub_formulae.head.symbol, place))
+
+				except KeyError:
+					ans[sub_formulae] = TypeInfo({(sub_formulae.head.symbol, place),})
+
+				ans = merged_power(ans, sub_formulae.get_power_infos())
+
+			else:
+				raise Exception(sub_formulae)
+
+		return ans
+
 	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
 
 		if a == self:
@@ -300,6 +400,9 @@ class Unary(Formulae):
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 		return self.a.get_type_infos()
 
+	def get_power_infos(self) -> EqDict[Formulae, TypeInfo]:
+		return self.a.get_power_infos()
+
 	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
 
 		if a == self:
@@ -348,6 +451,9 @@ class Quantifier(Formulae):
 
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 		return self.formulae.get_type_infos()
+
+	def get_power_infos(self) -> EqDict[Formulae, TypeInfo]:
+		return self.formulae.get_power_infos()
 
 	def get_symbols(self) -> Set[int]:
 		return self.formulae.get_symbols() # ignoring bound_identifiers since they will be either in formulae or useless
@@ -414,6 +520,21 @@ class Binary(Formulae):
 
 			except KeyError:
 				a[symbol] = t
+
+		return a
+
+	def get_power_infos(self) -> EqDict[Formulae, TypeInfo]:
+
+		a: EqDict[Formulae, TypeInfo] = self.a.get_power_infos()
+		b = self.b.get_power_infos()
+
+		for formulae, t in b.items():
+
+			try:
+				a[formulae] |= t
+
+			except KeyError:
+				a[formulae] = t
 
 		return a
 
@@ -732,12 +853,13 @@ def main():
 	p = v("P")
 	q = v("Q")
 	a = v("a")
+	i = v("i")
 	print(names.get_str())
 
 	print("=== Axioms ===")
 	axioms = [
 		forall({n}, p(n) |imply| q(n)),
-		p(a),
+		p(i(a)),
 	]
 
 	for axiom in axioms:
@@ -745,8 +867,10 @@ def main():
 		print(f"free symbols: {', '.join(names.get_l(axiom.free_symbols()))}")
 		print(f"bound symbols: {', '.join(names.get_l(axiom.bound_symbols()))}")
 
-	print("Type infos:")
+	print("/// Type infos:")
 	print(TypeInfo.str_infos(names, get_type_infos(axioms)))
+	print("///")
+	print(TypeInfo.str_power_infos(names, get_power_infos(axioms)))
 
 	print("=== Situation ===")
 	situation = [
@@ -757,11 +881,13 @@ def main():
 		print(f"free symbols: {', '.join(names.get_l(e.free_symbols()))}")
 		print(f"bound symbols: {', '.join(names.get_l(e.bound_symbols()))}")
 
-	print("Type infos:")
+	print("/// Type infos:")
 	print(TypeInfo.str_infos(names, get_type_infos(situation)))
+	print("///")
+	print(TypeInfo.str_power_infos(names, get_power_infos(situation)))
 
 	print("=== Question ===")
-	question = q(a)
+	question = q(i(a))
 
 	domain_vals = {
 		#eq.symbol: lambda a, b: a == b,
@@ -777,8 +903,10 @@ def main():
 	#print(f"eval: {question.get_eval(context)}")
 	print(f"free_symbols: {', '.join(names.get_l(question.free_symbols()))}")
 	print(f"bound symbols: {', '.join(names.get_l(question.bound_symbols()))}")
-	print("Type infos:")
+	print("/// Type infos:")
 	print(TypeInfo.str_infos(names, get_type_infos([question])))
+	print("///")
+	print(TypeInfo.str_power_infos(names, get_power_infos([question])))
 	sequent = Sequent(tuple(axioms + situation), (question,))
 	print("=== Proving ===")
 	prover = Prover.new(sequent)
