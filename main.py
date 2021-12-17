@@ -335,10 +335,10 @@ class Predicat(Formulae):
 			elif isinstance(sub_formulae, Predicat):
 
 				try:
-					ans[sub_formulae].add((sub_formulae.head.symbol, place))
+					ans[sub_formulae].add((self.head.symbol, place))
 
 				except KeyError:
-					ans[sub_formulae] = TypeInfo({(sub_formulae.head.symbol, place),})
+					ans[sub_formulae] = TypeInfo({(self.head.symbol, place),})
 
 				ans = merged_power(ans, sub_formulae.get_power_infos())
 
@@ -450,10 +450,10 @@ class Quantifier(Formulae):
 		return {ident.symbol for ident in self.bound_identifiers}
 
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
-		return self.formulae.get_type_infos()
+		return {k: v for k, v in self.formulae.get_type_infos().items() if not any(k == e.symbol for e in self.bound_identifiers)}
 
 	def get_power_infos(self) -> EqDict[Formulae, TypeInfo]:
-		return self.formulae.get_power_infos()
+		return EqDict([(formulae, infos) for formulae, infos in self.formulae.get_power_infos().items() if not any(formulae == e for e in self.bound_identifiers)])
 
 	def get_symbols(self) -> Set[int]:
 		return self.formulae.get_symbols() # ignoring bound_identifiers since they will be either in formulae or useless
@@ -606,12 +606,14 @@ class Prover:
 		goal_stack: List[Sequent],
 		unprovable: List[Sequent],
 		type_infos: Mapping[int, TypeInfo],
+		power_infos: EqDict[Formulae, TypeInfo],
 	):
 
 		self.goal = goal
 		self.goal_stack = goal_stack
 		self.unprovable = unprovable
 		self.type_infos = type_infos
+		self.power_infos = power_infos
 		self.symbols = self.goal.get_symbols()
 
 	@classmethod
@@ -621,6 +623,7 @@ class Prover:
 			goal_stack=[goal,],
 			unprovable=[],
 			type_infos=get_type_infos(goal.antesequent + goal.consequent),
+			power_infos=get_power_infos(goal.antesequent + goal.consequent),
 		)
 
 	@property
@@ -631,7 +634,7 @@ class Prover:
 
 		goal_stack_txt = '\n - '.join(e.get_str(names) for e in self.goal_stack)
 		unprovable_txt = '\n - '.join(e.get_str(names) for e in self.unprovable)
-		return f"{self.goal.get_str(names)}:\ngoal stack:\n{goal_stack_txt}\nunprovable:\n{unprovable_txt}\nproved: {self.proved}"
+		return f"{self.goal.get_str(names)}:\ngoal stack:\n - {goal_stack_txt}\nunprovable:\n - {unprovable_txt}\nproved: {self.proved}"
 
 	def prove(self):
 
@@ -664,57 +667,60 @@ class Prover:
 			formulae = sequent.antesequent[n]
 			gamma = tuple(sequent.antesequent[i] for i in range(len(sequent.antesequent)) if i != n)
 
-			if isinstance(formulae, Imply):
+			if type(formulae) is Imply:
 
 				a, b = formulae.a, formulae.b
 				self.goal_stack.append(Sequent(gamma, (a,) + sequent.consequent))
 				self.goal_stack.append(Sequent(gamma + (b,), sequent.consequent))
 				return
 
-			elif isinstance(formulae, Or):
+			elif type(formulae) is Or:
 
 				a, b = formulae.a, formulae.b
 				self.goal_stack.append(Sequent(gamma + (a,), sequent.consequent))
 				self.goal_stack.append(Sequent(gamma + (b,), sequent.consequent))
 				return
 
-			elif isinstance(formulae, And):
+			elif type(formulae) is And:
 
 				a, b = formulae.a, formulae.b
 				self.goal_stack.append(Sequent(gamma + (a, b), sequent.consequent))
 				return
 
-			elif isinstance(formulae, Not):
+			elif type(formulae) is Not:
 
 				a = formulae.a
 				self.goal_stack.append(Sequent(gamma, sequent.consequent + (a,)))
 				return
 
-			elif isinstance(formulae, ForAll):
+			elif type(formulae) is ForAll:
 
-				new_formulae = formulae
-				local_type_infos = new_formulae.formulae.get_type_infos()
+				new_formulae = formulae.formulae
+				local_power_infos = new_formulae.get_power_infos()
 
 				for bound_identifier in formulae.bound_identifiers:
-					for bound_sym in bound_identifier.get_symbols():
-
-						for target_sym in functools.reduce(set.union, (e.free_symbols() for e in sequent.consequent)):
-							if local_type_infos[bound_sym].elements & self.type_infos[target_sym].elements:
-								if target_sym not in new_formulae.formulae.bound_symbols():
+					for target_formulae, infos in self.power_infos.items():
+						if local_power_infos[bound_identifier].elements & self.power_infos[target_formulae].elements:
+							
+							if isinstance(target_formulae, Identifier):
+								if target_formulae.symbol not in new_formulae.formulae.bound_symbols():
 									break
 
-						else:
-							continue
+							else:
+								break
 
-						new_formulae = new_formulae.replaced(bound_identifier, Identifier(target_sym))
+					else:
+						continue
 
-				if new_formulae is formulae:
+					new_formulae = new_formulae.replaced(bound_identifier, target_formulae)
+
+				if new_formulae is formulae.formulae:
 					continue
 
-				self.goal_stack.append(Sequent(gamma + (new_formulae.formulae,), sequent.consequent))
+				self.goal_stack.append(Sequent(gamma + (new_formulae,), sequent.consequent))
 				return
 
-			elif isinstance(formulae, Exists):
+			elif type(formulae) is Exists:
 
 				bound_syms: Set[int] = set()
 
@@ -728,7 +734,7 @@ class Prover:
 
 				continue
 
-			elif isinstance(formulae, Predicat):
+			elif type(formulae) is Predicat:
 				continue
 
 			else:
@@ -739,56 +745,59 @@ class Prover:
 			formulae = sequent.consequent[n]
 			delta = tuple(sequent.consequent[i] for i in range(len(sequent.consequent)) if i != n)
 
-			if isinstance(formulae, Imply):
+			if type(formulae) is Imply:
 
 				a, b = formulae.a, formulae.b
 				self.goal_stack.append(Sequent(sequent.antesequent + (a,), delta + (b,)))
 				return
 
-			elif isinstance(formulae, Or):
+			elif type(formulae) is Or:
 
 				a, b = formulae.a, formulae.b
 				self.goal_stack.append(Sequent(sequent.antesequent, delta + (a, b)))
 				return
 
-			elif isinstance(formulae, And):
+			elif type(formulae) is And:
 
 				a, b = formulae.a, formulae.b
 				self.goal_stack.append(Sequent(sequent.antesequent, delta + (a,)))
 				self.goal_stack.append(Sequent(sequent.antesequent, delta + (b,)))
 				return
 
-			elif isinstance(formulae, Not):
+			elif type(formulae) is Not:
 
 				a = formulae.a
 				self.goal_stack.append(Sequent(sequent.antesequent + (a,), delta))
 				return
 
-			elif isinstance(formulae, Exists):
+			elif type(formulae) is Exists:
 
-				new_formulae = formulae
-				local_type_infos = new_formulae.formulae.get_type_infos()
+				new_formulae = formulae.formulae
+				local_power_infos = new_formulae.get_power_infos()
 
 				for bound_identifier in formulae.bound_identifiers:
-					for bound_sym in bound_identifier.get_symbols():
-
-						for target_sym in functools.reduce(set.union, (e.free_symbols() for e in sequent.antesequent)):
-							if local_type_infos[bound_sym].elements & self.type_infos[target_sym].elements:
-								if target_sym not in new_formulae.formulae.bound_symbols():
+					for target_formulae, infos in self.power_infos.items():
+						if local_power_infos[bound_identifier].elements & self.power_infos[target_formulae].elements:
+							
+							if isinstance(target_formulae, Identifier):
+								if target_formulae.symbol not in new_formulae.formulae.bound_symbols():
 									break
 
-						else:
-							continue
+							else:
+								break
 
-						new_formulae = new_formulae.replaced(bound_identifier, Identifier(target_sym))
+					else:
+						continue
 
-				if new_formulae is formulae:
+					new_formulae = new_formulae.replaced(bound_identifier, target_formulae)
+
+				if new_formulae is formulae.formulae:
 					continue
 
 				self.goal_stack.append(Sequent(sequent.antesequent, delta + (new_formulae,)))
 				return
 
-			elif isinstance(formulae, ForAll):
+			elif type(formulae) is ForAll:
 
 				bound_syms: Set[int] = set()
 
@@ -802,7 +811,7 @@ class Prover:
 
 				continue
 
-			elif isinstance(formulae, Predicat):
+			elif type(formulae) is Predicat:
 				continue
 
 			else:
