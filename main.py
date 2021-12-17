@@ -7,11 +7,14 @@ import functools
 import itertools
 import random
 
-from typing import Type, TypeVar, Tuple, Set, Mapping, MutableMapping, Sequence, Generic, Callable, List
+from typing import Type, TypeVar, Tuple, Set, Mapping, MutableMapping, Sequence, Generic, Callable, List, Union, Any
 
 Clue = Tuple[int, int]
 # Predicat head symbol, place
 # place starts at 0
+
+def raise_e(obj):
+	raise obj
 
 G = TypeVar("G", bound="Set")
 
@@ -104,10 +107,10 @@ class Formulae:
 	def get_str(self, names: Names) -> str:
 		raise NotSpecified(f"{type(self)} {self}")
 
-	def replaced(self, a: int, b: int) -> Formulae:
+	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
 		"""
 
-			returns same formulae with a replaced by b
+			returns formulae tree with sub formulae a replaced by sub forumulae b
 
 		"""
 		raise NotSpecified(f"{type(self)} {self}")
@@ -118,16 +121,20 @@ class Formulae:
 	def free_symbols(self) -> Set[int]:
 		raise NotSpecified(f"{type(self)} {self}")
 
+	def bound_symbols(self) -> Set[int]:
+		raise NotSpecified(f"{type(self)} {self}")
+
 	def __neg__(self) -> Not:
 		return Not(self)
 
-def get_type_infos(l: Sequence[Formulae]) -> Mapping[int, TypeInfo]:
-	
+	def get_eval(self, context: Context) -> Any:
+		raise NotSpecified(f"{type(self)} {self}")
+
+def merged(a: Mapping[int, TypeInfo], b: Mapping[int, TypeInfo]) -> MutableMapping[int, TypeInfo]:
+
 	ans: MutableMapping[int, TypeInfo] = {}
 
-	for formulae in l:
-
-		type_infos = formulae.get_type_infos()
+	for type_infos in (a, b):
 
 		for symbol, type_info in type_infos.items():
 
@@ -139,6 +146,17 @@ def get_type_infos(l: Sequence[Formulae]) -> Mapping[int, TypeInfo]:
 
 	return ans
 
+def get_type_infos(l: Sequence[Formulae]) -> Mapping[int, TypeInfo]:
+	
+	ans: Mapping[int, TypeInfo] = {}
+
+	for formulae in l:
+
+		type_infos = formulae.get_type_infos()
+		ans = merged(ans, type_infos)
+
+	return ans
+
 class Identifier(Formulae):
 
 	level: float = 100
@@ -147,11 +165,17 @@ class Identifier(Formulae):
 
 		self.symbol = symbol
 
+	def __call__(self, *tail: Union[Identifier, Predicat]):
+		return Predicat(head=self, tail=tail)
+
 	def __eq__(self, other) -> bool:
 		return type(self) is type(other) and self.symbol == other.symbol
 
 	def free_symbols(self) -> Set[int]:
 		return {self.symbol}
+
+	def bound_symbols(self) -> Set[int]:
+		return set()
 
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 		return {}
@@ -162,22 +186,25 @@ class Identifier(Formulae):
 	def __hash__(self) -> int:
 		return self.symbol
 
-	def replaced(self, a: int, b: int) -> Identifier:
+	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
 
-		if a == self.symbol:
-			return Identifier(b)
+		if a == self:
+			return b
 
 		else:
-			return Identifier(self.symbol)
+			return self
 
 	def get_symbols(self) -> Set[int]:
 		return {self.symbol}
+
+	def get_eval(self, context: Context) -> Any:
+		return context.domain(self.symbol)
 
 class Predicat(Formulae):
 
 	level: float = 100
 
-	def __init__(self, head: Identifier, tail: Sequence[Identifier]):
+	def __init__(self, head: Identifier, tail: Sequence[Union[Identifier, Predicat]]):
 
 		self.head = head
 		self.tail = tail
@@ -193,30 +220,65 @@ class Predicat(Formulae):
 		all(a == b for a, b in zip(self.tail, other.tail))
 
 	def free_symbols(self) -> Set[int]:
-		return functools.reduce(set.union, (e.free_symbols() for e in self.tail))
+		return functools.reduce(set.union, (e.free_symbols() for e in self.tail), set())
+
+	def bound_symbols(self) -> Set[int]:
+		return set()
 
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 
 		ans: MutableMapping[int, TypeInfo] = {}
 		
-		for place, identifier in enumerate(self.tail, 0):
+		for place, sub_formulae in enumerate(self.tail, 0):
 
-			try:
-				ans[identifier.symbol].add((self.head.symbol, place))
+			if isinstance(sub_formulae, Identifier):
 
-			except KeyError:
-				ans[identifier.symbol] = TypeInfo({(self.head.symbol, place),})
+				try:
+					ans[sub_formulae.symbol].add((self.head.symbol, place))
+
+				except KeyError:
+					ans[sub_formulae.symbol] = TypeInfo({(self.head.symbol, place),})
+
+			elif isinstance(sub_formulae, Predicat):
+				ans = merged(ans, sub_formulae.get_type_infos())
+
+			else:
+				raise Exception(sub_formulae)
 
 		return ans
 
-	def replaced(self, a: int, b: int) -> Predicat:
-		return Predicat(self.head.replaced(a, b), [e.replaced(a, b) for e in self.tail])
+	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
+
+		if a == self:
+			return b
+
+		else:
+
+			new_head = self.head.replaced(a, b)
+			new_tail = []
+
+			for e in (e.replaced(a, b) for e in self.tail):
+
+				if isinstance(e, (Identifier, Predicat)):
+					new_tail.append(e)
+
+				else:
+					raise Exception(f"Trying to replace predicat argument with non identifier and non predicat")
+
+			if isinstance(new_head, Identifier):
+				return Predicat(new_head, new_tail)
+
+			else:
+				raise Exception(f"Trying to replace predicat head with non identifer")
 
 	def get_str(self, names: Names) -> str:
 		return f"{self.head.get_str(names)}({', '.join(e.get_str(names) for e in self.tail)})"
 
 	def get_symbols(self) -> Set[int]:
 		return functools.reduce(set.union, (e.get_symbols() for e in self.tail))
+
+	def get_eval(self, context: Context) -> Any:
+		return self.head.get_eval(context)(*[ident.get_eval(context) for ident in self.tail])
 
 class Unary(Formulae):
 
@@ -232,26 +294,37 @@ class Unary(Formulae):
 	def free_symbols(self) -> Set[int]:
 		return self.a.free_symbols()
 
+	def bound_symbols(self) -> Set[int]:
+		return self.a.bound_symbols()
+
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 		return self.a.get_type_infos()
 
-	def replaced(self, a: int, b: int) -> Unary:
-		return self.__class__(self.a.replaced(a, b))
+	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
+
+		if a == self:
+			return b
+
+		else:
+			return self.__class__(self.a.replaced(a, b))
 
 	def get_symbols(self) -> Set[int]:
 		return self.a.get_symbols()
+
+	def get_eval(self, context: Context) -> Any:
+		return self.a.get_eval(context)
 
 class Not(Unary):
 	
 	def get_str(self, names: Names) -> str:
 		return f"¬{paren_if(self.a.get_str(names), self.a.level > self.level)}"
 
-class ForAll(Formulae):
-	"""
+	def get_eval(self, context: Context) -> Any:
+		return not bool(self.a.get_eval(context))
 
-		only use once at the root of a formulae!
+class QuantifierEval(Exception): pass
 
-	"""
+class Quantifier(Formulae):
 
 	level: float = math.inf
 	
@@ -270,17 +343,46 @@ class ForAll(Formulae):
 	def free_symbols(self) -> Set[int]:
 		return self.formulae.free_symbols() - self.bound_identifiers_free_symbols
 
+	def bound_symbols(self) -> Set[int]:
+		return {ident.symbol for ident in self.bound_identifiers}
+
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 		return self.formulae.get_type_infos()
-
-	def get_str(self, names: Names) -> str:
-		return f"∀{','.join(e.get_str(names) for e in self.bound_identifiers)}.{self.formulae.get_str(names)}"
 
 	def get_symbols(self) -> Set[int]:
 		return self.formulae.get_symbols() # ignoring bound_identifiers since they will be either in formulae or useless
 
-	def replaced(self, a: int, b: int) -> ForAll:
-		return ForAll({e.replaced(a, b) for e in self.bound_identifiers}, self.formulae.replaced(a, b))
+	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
+
+		if a == self:
+			return b
+
+		else:
+
+			new_bound_identifiers = set()
+
+			for e in (e.replaced(a, b) for e in self.bound_identifiers):
+
+				if isinstance(e, Identifier):
+					new_bound_identifiers.add(e)
+
+				else:
+					raise Exception(f"Trying to replace bound identifier by non identifier")
+
+			return self.__class__(new_bound_identifiers, self.formulae.replaced(a, b))
+
+	def get_eval(self, context: Context) -> Any:
+		raise QuantifierEval
+
+class ForAll(Quantifier):
+
+	def get_str(self, names: Names) -> str:
+		return f"∀{','.join(e.get_str(names) for e in self.bound_identifiers)}.{self.formulae.get_str(names)}"
+
+class Exists(Quantifier):
+
+	def get_str(self, names: Names) -> str:
+		return f"∃{','.join(e.get_str(names) for e in self.bound_identifiers)}.{self.formulae.get_str(names)}"
 
 class Binary(Formulae):
 
@@ -297,6 +399,9 @@ class Binary(Formulae):
 	def free_symbols(self) -> Set[int]:
 		return self.a.free_symbols() | self.b.free_symbols()
 
+	def bound_symbols(self) -> Set[int]:
+		return self.a.bound_symbols() | self.b.bound_symbols()
+
 	def get_type_infos(self) -> Mapping[int, TypeInfo]:
 
 		a: MutableMapping[int, TypeInfo] = {**self.a.get_type_infos()}
@@ -312,8 +417,13 @@ class Binary(Formulae):
 
 		return a
 
-	def replaced(self, a: int, b: int) -> Binary:
-		return self.__class__(self.a.replaced(a, b), self.b.replaced(a, b))
+	def replaced(self, a: Formulae, b: Formulae) -> Formulae:
+
+		if a == self:
+			return b
+
+		else:
+			return self.__class__(self.a.replaced(a, b), self.b.replaced(a, b))
 
 	def get_symbols(self) -> Set[int]:
 		return self.a.get_symbols() | self.b.get_symbols()
@@ -323,10 +433,16 @@ class And(Binary):
 	def get_str(self, names: Names) -> str:
 		return f"{paren_if(self.a.get_str(names), self.a.level > self.level)}∧{paren_if(self.b.get_str(names), self.b.level > self.level)}"
 
+	def get_eval(self, context: Context) -> Any:
+		return bool(self.a.get_eval(context)) and bool(self.b.get_eval(context))
+
 class Or(Binary):
 	
 	def get_str(self, names: Names) -> str:
 		return f"{paren_if(self.a.get_str(names), self.a.level > self.level)}∨{paren_if(self.b.get_str(names), self.b.level > self.level)}"
+
+	def get_eval(self, context: Context) -> Any:
+		return bool(self.a.get_eval(context)) or bool(self.b.get_eval(context))
 
 class Imply(Binary):
 
@@ -334,6 +450,9 @@ class Imply(Binary):
 	
 	def get_str(self, names: Names) -> str:
 		return f"{paren_if(self.a.get_str(names), self.a.level > self.level)}→{paren_if(self.b.get_str(names), self.b.level > self.level)}"
+
+	def get_eval(self, context: Context) -> Any:
+		return (not bool(self.a.get_eval(context))) or bool(self.b.get_eval(context))
 
 class Sequent:
 
@@ -345,41 +464,17 @@ class Sequent:
 	def get_str(self, names: Names) -> str:
 		return f"{', '.join(e.get_str(names) for e in self.antesequent)} ⊢ {', '.join(e.get_str(names) for e in self.consequent)}"
 
-"""
-def make_goal(axioms: List[Formulae], situation: List[Formulae], question: Formulae) -> Sequent:
+	def get_symbols(self) -> Set[int]:
 
-	involved: List[Formulae] = situation + [question]
-	axiom_type_infos = get_type_infos(axioms)
-	involved_type_infos = get_type_infos(involved)
-	actual_axioms = []
+		a = functools.reduce(set.union, (e.get_symbols() for e in self.antesequent))
+		b = functools.reduce(set.union, (e.get_symbols() for e in self.consequent))
+		return a|b
 
-	for axiom in axioms:
-		match axiom:
-			case ForAll(identifiers=identifiers, formulae=formulae):
+class Context:
 
-				axiom_symbols = list(axiom.get_symbols())
-				candidate_symbols = []
+	def __init__(self, domain: Callable[[int], Any]):
 
-				for axiom_symbol in axiom_symbols:
-
-					axiom_symbol_type = axiom_type_infos[axiom_symbol]
-					candidate_symbols.append(
-						[
-							s
-							for s, t in involved_type_infos.items()
-							if t.elements & axiom_symbol_type.elements
-						]
-					)
-
-				for binding in itertools.product(*candidate_symbols):
-					for axiom_symbol, involved_symbol in zip(axiom_symbols, binding):
-						actual_axioms.append(formulae.replaced(axiom_symbol, involved_symbol))
-
-			case formulae:
-				actual_axioms.append(formulae)
-
-	return Sequent(tuple(actual_axioms + situation), (question,))
-"""
+		self.domain = domain
 
 class ProofDone(Exception): pass
 
@@ -396,6 +491,7 @@ class Prover:
 		self.goal_stack = goal_stack
 		self.unprovable = unprovable
 		self.type_infos = type_infos
+		self.symbols = self.goal.get_symbols()
 
 	@classmethod
 	def new(cls, goal: Sequent) -> Prover:
@@ -476,17 +572,20 @@ class Prover:
 			elif isinstance(formulae, ForAll):
 
 				new_formulae = formulae
+				local_type_infos = new_formulae.formulae.get_type_infos()
 
 				for bound_identifier in formulae.bound_identifiers:
 					for bound_sym in bound_identifier.get_symbols():
 
 						for target_sym in functools.reduce(set.union, (e.free_symbols() for e in sequent.consequent)):
-							if self.type_infos[bound_sym].elements & self.type_infos[target_sym].elements:
-								break
+							if local_type_infos[bound_sym].elements & self.type_infos[target_sym].elements:
+								if target_sym not in new_formulae.formulae.bound_symbols():
+									break
 
 						else:
 							continue
 
+						# TODO
 						new_formulae = new_formulae.replaced(bound_sym, target_sym)
 
 				if new_formulae is formulae:
@@ -494,6 +593,20 @@ class Prover:
 
 				self.goal_stack.append(Sequent(gamma + (new_formulae.formulae,), sequent.consequent))
 				return
+
+			elif isinstance(formulae, Exists):
+
+				bound_syms: Set[int] = set()
+
+				for bound_identifier in formulae.bound_identifiers:
+					for bound_sym in bound_identifier.get_symbols():
+						bound_syms.add(bound_sym)
+
+				if not (bound_syms & functools.reduce(set.union, (e.free_symbols() for e in gamma + sequent.consequent))):
+					self.goal_stack.append(Sequent(gamma + (formulae.formulae,), sequent.consequent))
+					return
+
+				continue
 
 			elif isinstance(formulae, Predicat):
 				continue
@@ -530,6 +643,44 @@ class Prover:
 				a = formulae.a
 				self.goal_stack.append(Sequent(sequent.antesequent + (a,), delta))
 				return
+
+			elif isinstance(formulae, Exists):
+
+				new_formulae = formulae
+				local_type_infos = new_formulae.formulae.get_type_infos()
+
+				for bound_identifier in formulae.bound_identifiers:
+					for bound_sym in bound_identifier.get_symbols():
+
+						for target_sym in functools.reduce(set.union, (e.free_symbols() for e in sequent.antesequent)):
+							if local_type_infos[bound_sym].elements & self.type_infos[target_sym].elements:
+								if target_sym not in new_formulae.formulae.bound_symbols():
+									break
+
+						else:
+							continue
+
+						new_formulae = new_formulae.replaced(bound_sym, target_sym)
+
+				if new_formulae is formulae:
+					continue
+
+				self.goal_stack.append(Sequent(sequent.antesequent, delta + (new_formulae,)))
+				return
+
+			elif isinstance(formulae, ForAll):
+
+				bound_syms: Set[int] = set()
+
+				for bound_identifier in formulae.bound_identifiers:
+					for bound_sym in bound_identifier.get_symbols():
+						bound_syms.add(bound_sym)
+
+				if not (bound_syms & functools.reduce(set.union, (e.free_symbols() for e in delta + sequent.antesequent))):
+					self.goal_stack.append(Sequent(sequent.antesequent, delta + (formulae.formulae,)))
+					return
+
+				continue
 
 			elif isinstance(formulae, Predicat):
 				continue
@@ -572,50 +723,65 @@ def no(a: Formulae) -> Not:
 def forall(identifiers: Set[Identifier], formulae: Formulae) -> ForAll:
 	return ForAll(identifiers, formulae)
 
+def exists(identifiers: Set[Identifier], formulae: Formulae) -> Exists:
+	return Exists(identifiers, formulae)
+
 def main():
 
 	names = Names.new()
-	x = v("x")
-	y = v("Y")
-	c = v("C")
-	h = v("H")
-	b = v("b")
-	human = v("Human")
+	n = v("n")
+	p = v("P")
+	q = v("Q")
+	a = v("a")
 	print(names.get_str())
 
 	print("=== Axioms ===")
 	axioms = [
-		pred(human, x),
-		forall([x], (pred(c, x) |land| pred(y, x)) |imply| pred(h, x)),
+		forall({n}, p(n) |imply| q(n)),
+		p(a),
 	]
 
 	for axiom in axioms:
 		print(" - " + axiom.get_str(names))
 		print(f"free symbols: {', '.join(names.get_l(axiom.free_symbols()))}")
+		print(f"bound symbols: {', '.join(names.get_l(axiom.bound_symbols()))}")
 
+	print("Type infos:")
 	print(TypeInfo.str_infos(names, get_type_infos(axioms)))
 
 	print("=== Situation ===")
 	situation = [
-		pred(y, b),
-		pred(c, b),
 	]
 
 	for e in situation:
 		print(" - " + e.get_str(names))
 		print(f"free symbols: {', '.join(names.get_l(e.free_symbols()))}")
+		print(f"bound symbols: {', '.join(names.get_l(e.bound_symbols()))}")
 
+	print("Type infos:")
 	print(TypeInfo.str_infos(names, get_type_infos(situation)))
 
 	print("=== Question ===")
-	question = pred(h, b)
+	question = q(a)
+
+	domain_vals = {
+		#eq.symbol: lambda a, b: a == b,
+		#add.symbol: lambda a, b: a + b,
+		#s.symbol: lambda n: n + 1,
+		#zero.symbol: lambda: 0,
+	}
+	context = Context(
+		domain=domain_vals.get,
+	)
+
 	print(question.get_str(names))
+	#print(f"eval: {question.get_eval(context)}")
 	print(f"free_symbols: {', '.join(names.get_l(question.free_symbols()))}")
+	print(f"bound symbols: {', '.join(names.get_l(question.bound_symbols()))}")
+	print("Type infos:")
 	print(TypeInfo.str_infos(names, get_type_infos([question])))
-	print("================")
 	sequent = Sequent(tuple(axioms + situation), (question,))
-	print(sequent.get_str(names))
-	print("Proving")
+	print("=== Proving ===")
 	prover = Prover.new(sequent)
 	prover.prove()
 	print(prover.get_debug(names))
