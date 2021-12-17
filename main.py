@@ -585,8 +585,7 @@ class Prover:
 						else:
 							continue
 
-						# TODO
-						new_formulae = new_formulae.replaced(bound_sym, target_sym)
+						new_formulae = new_formulae.replaced(bound_identifier, Identifier(target_sym))
 
 				if new_formulae is formulae:
 					continue
@@ -660,7 +659,7 @@ class Prover:
 						else:
 							continue
 
-						new_formulae = new_formulae.replaced(bound_sym, target_sym)
+						new_formulae = new_formulae.replaced(bound_identifier, Identifier(target_sym))
 
 				if new_formulae is formulae:
 					continue
